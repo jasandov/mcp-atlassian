@@ -513,6 +513,42 @@ async def get_page_children(
 
 @confluence_mcp.tool(
     tags={"confluence", "read", "toolset:confluence_pages"},
+    annotations={"title": "Get Space", "readOnlyHint": True},
+)
+async def get_space(
+    ctx: Context,
+    space_key: Annotated[
+        str,
+        Field(
+            description=(
+                "Space key, as shown in the space URL. Examples: 'DEV', 'TEAM', "
+                "or a personal space key such as '~712020:0f8c12c2-...'."
+            )
+        ),
+    ],
+) -> str:
+    """Get a Confluence space by its key.
+
+    Returns the space's numeric id, key, name, type, status, homepage id and
+    plain-text description. The numeric id is what
+    confluence_get_space_permissions and the other v2 space endpoints take;
+    the key alone is not accepted there.
+
+    Args:
+        ctx: The FastMCP context.
+        space_key: The space key.
+
+    Returns:
+        JSON string with the space's id, key, name, type, status,
+        homepage_id and description.
+    """
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    space = confluence_fetcher.get_space_details(space_key)
+    return json.dumps(space, indent=2, ensure_ascii=False)
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "read", "toolset:confluence_pages"},
     annotations={"title": "Get Space Page Tree", "readOnlyHint": True},
 )
 async def get_space_page_tree(

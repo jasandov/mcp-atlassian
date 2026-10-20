@@ -299,6 +299,57 @@ class ConfluenceV2Adapter:
             # Return the space_id as fallback
             return {"id": space_id, "key": space_id, "name": f"Space {space_id}"}
 
+    @staticmethod
+    def _normalize_space(data: dict[str, Any]) -> dict[str, Any]:
+        """Flatten a v2 space object into the fields callers need."""
+        homepage_id = data.get("homepageId")
+        description = data.get("description") or {}
+        plain = description.get("plain") if isinstance(description, dict) else None
+        return {
+            "id": str(data.get("id", "")),
+            "key": str(data.get("key", "")),
+            "name": str(data.get("name") or ""),
+            "type": str(data.get("type") or ""),
+            "status": str(data.get("status") or ""),
+            "homepage_id": str(homepage_id) if homepage_id else None,
+            "description": (
+                str(plain.get("value") or "") if isinstance(plain, dict) else ""
+            ),
+        }
+
+    def get_space_by_key(self, space_key: str) -> dict[str, Any]:
+        """Look a space up by key using the v2 API.
+
+        Args:
+            space_key: The space key, for example ``DEV`` or ``~accountid``.
+
+        Returns:
+            The space's id, key, name, type, status, homepage id and plain-text
+            description.
+
+        Raises:
+            ValueError: If the space is not found or the request fails.
+        """
+        try:
+            url = f"{self.base_url}/api/v2/spaces"
+            params = {"keys": space_key, "description-format": "plain"}
+            response = self.session.get(url, params=params)
+            response.raise_for_status()
+            results = response.json().get("results", [])
+            if not results:
+                raise ValueError(f"Space with key '{space_key}' not found")
+            return self._normalize_space(results[0])
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error getting space '{space_key}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error getting space '{space_key}': {e}")
+            raise ValueError(f"Failed to get space '{space_key}': {e}") from e
+
     def _get_space_key_from_id(self, space_id: str) -> str:
         """Get space key from space ID using v2 API."""
         return self._get_space_from_id(space_id)["key"]

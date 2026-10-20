@@ -178,6 +178,15 @@ def mock_confluence_fetcher():
         ],
         "_links": {},
     }
+    mock_fetcher.get_space_details.return_value = {
+        "id": "120193605",
+        "key": "TEST",
+        "name": "Test Space",
+        "type": "global",
+        "status": "current",
+        "homepage_id": "76514202",
+        "description": "A space for tests",
+    }
     mock_fetcher.list_page_templates.return_value = [
         {
             "templateId": "tpl-001",
@@ -248,6 +257,7 @@ def test_confluence_mcp(mock_confluence_fetcher, mock_base_confluence_config):
         get_page_children,
         get_page_images,
         get_page_template,
+        get_space,
         get_space_page_tree,
         get_space_permissions,
         list_page_templates,
@@ -303,6 +313,7 @@ def test_confluence_mcp(mock_confluence_fetcher, mock_base_confluence_config):
     confluence_sub_mcp.add_tool(get_page_template)
     confluence_sub_mcp.add_tool(create_page_from_template)
 
+    confluence_sub_mcp.add_tool(get_space)
     test_mcp.mount(confluence_sub_mcp, namespace="confluence")
 
     return test_mcp
@@ -331,6 +342,7 @@ def no_fetcher_test_confluence_mcp(mock_base_confluence_config):
         get_page_children,
         get_page_images,
         get_page_template,
+        get_space,
         get_space_page_tree,
         get_space_permissions,
         list_page_templates,
@@ -388,6 +400,7 @@ def no_fetcher_test_confluence_mcp(mock_base_confluence_config):
     confluence_sub_mcp.add_tool(get_page_template)
     confluence_sub_mcp.add_tool(create_page_from_template)
 
+    confluence_sub_mcp.add_tool(get_space)
     test_mcp.mount(confluence_sub_mcp, namespace="confluence")
 
     return test_mcp
@@ -1732,3 +1745,14 @@ async def test_get_page_images_fetch_failure(client, mock_confluence_fetcher):
     summary = json.loads(response.content[0].text)
     assert summary["downloaded"] == 0
     assert len(summary["failed"]) == 1
+
+
+@pytest.mark.anyio
+async def test_get_space(client, mock_confluence_fetcher):
+    """Test looking a space up by key."""
+    response = await client.call_tool("confluence_get_space", {"space_key": "TEST"})
+    mock_confluence_fetcher.get_space_details.assert_called_once_with("TEST")
+    result_data = json.loads(response.content[0].text)
+    assert result_data["id"] == "120193605"
+    assert result_data["key"] == "TEST"
+    assert result_data["homepage_id"] == "76514202"

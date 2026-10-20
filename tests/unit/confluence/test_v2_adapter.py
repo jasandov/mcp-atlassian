@@ -715,3 +715,75 @@ class TestConfluenceV2AdapterComments:
         assert payload["pageId"] == "12345"
         assert "parentCommentId" not in payload
         assert result["id"] == "333444555"
+
+
+class TestConfluenceV2AdapterSpaceByKey:
+    """Tests for ConfluenceV2Adapter.get_space_by_key."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Create a mock session."""
+        return MagicMock(spec=requests.Session)
+
+    @pytest.fixture
+    def v2_adapter(self, mock_session):
+        """Create a ConfluenceV2Adapter instance."""
+        return ConfluenceV2Adapter(
+            session=mock_session, base_url="https://example.atlassian.net/wiki"
+        )
+
+    def test_space_is_flattened(self, v2_adapter, mock_session):
+        """The first match is returned with homepage id and plain description."""
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            "results": [
+                {
+                    "id": "120193605",
+                    "key": "FDE",
+                    "name": "Forward Deployed Engineering",
+                    "type": "global",
+                    "status": "current",
+                    "homepageId": "76514202",
+                    "description": {"plain": {"value": "FDE space"}},
+                }
+            ]
+        }
+        mock_session.get.return_value = response
+
+        result = v2_adapter.get_space_by_key("FDE")
+
+        mock_session.get.assert_called_once_with(
+            "https://example.atlassian.net/wiki/api/v2/spaces",
+            params={"keys": "FDE", "description-format": "plain"},
+        )
+        assert result == {
+            "id": "120193605",
+            "key": "FDE",
+            "name": "Forward Deployed Engineering",
+            "type": "global",
+            "status": "current",
+            "homepage_id": "76514202",
+            "description": "FDE space",
+        }
+
+    def test_unknown_key_is_an_error(self, v2_adapter, mock_session):
+        """No results means not found."""
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {"results": []}
+        mock_session.get.return_value = response
+
+        with pytest.raises(ValueError, match="Space with key 'NOPE' not found"):
+            v2_adapter.get_space_by_key("NOPE")
+
+    def test_http_error_is_reported(self, v2_adapter, mock_session):
+        """An HTTP error becomes a ValueError."""
+        response = Mock()
+        response.status_code = 401
+        response.text = "scope does not match"
+        response.raise_for_status.side_effect = HTTPError(response=response)
+        mock_session.get.return_value = response
+
+        with pytest.raises(ValueError, match="Failed to get space 'FDE'"):
+            v2_adapter.get_space_by_key("FDE")
