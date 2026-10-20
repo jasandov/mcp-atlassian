@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, mock_open, patch
 
 import pytest
 from mcp.types import EmbeddedResource, TextContent
+from requests.exceptions import HTTPError
 
 from mcp_atlassian.confluence.attachments import AttachmentsMixin
 from mcp_atlassian.confluence.config import ConfluenceConfig
@@ -540,7 +541,11 @@ class TestAttachmentsMixin:
         assert call_args[1]["headers"]["X-Atlassian-Token"] == "no-check"
         assert call_args[1]["data"]["minorEdit"] == "false"
         # The raw bytes are sent directly as the multipart file payload
-        assert call_args[1]["files"]["file"] == ("test_file.txt", b"test content")
+        assert call_args[1]["files"]["file"] == (
+            "test_file.txt",
+            b"test content",
+            "text/plain",
+        )
 
     def test_upload_attachment_from_content_no_content_id(
         self, attachments_mixin: AttachmentsMixin
@@ -633,7 +638,11 @@ class TestAttachmentsMixin:
         assert attachments_mixin.confluence._session.post.call_count == 2
         second_call = attachments_mixin.confluence._session.post.call_args_list[1]
         assert "/child/attachment/att12345/data" in second_call[0][0]
-        assert second_call[1]["files"]["file"] == (filename, b"updated content")
+        assert second_call[1]["files"]["file"] == (
+            filename,
+            b"updated content",
+            "text/plain",
+        )
 
     # Tests for download_attachment method
 
@@ -1936,3 +1945,82 @@ class TestResolveAttachmentDownloadUrl:
             "/download/attachments/123/foo.png", attachment_id="att999"
         )
         assert "/child/attachment/" not in url
+
+
+class TestAttachmentsMixinCloudOAuthUpload:
+    """Uploads on Cloud OAuth use PUT, Atlassian's create-or-update.
+
+    The POST path cannot version an existing name there: on the 400 it gets
+    for a duplicate name it looks the attachment up through a v1 list
+    endpoint the OAuth gateway has removed (410 Gone).
+    """
+
+    @pytest.fixture
+    def oauth_attachments_mixin(self, oauth_confluence_client) -> AttachmentsMixin:
+        """Create an AttachmentsMixin configured for Cloud OAuth."""
+        with patch(
+            "mcp_atlassian.confluence.attachments.ConfluenceClient.__init__"
+        ) as mock_init:
+            mock_init.return_value = None
+            mixin = AttachmentsMixin()
+            mixin.confluence = oauth_confluence_client.confluence
+            mixin.confluence.url = "https://api.atlassian.com/ex/confluence/cloud-id"
+            mixin.config = oauth_confluence_client.config
+            mixin.preprocessor = oauth_confluence_client.preprocessor
+            return mixin
+
+    def test_upload_uses_put_with_media_type(self, oauth_attachments_mixin):
+        """One PUT to the list endpoint, file part typed from the filename."""
+        response = Mock()
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "results": [
+                {
+                    "id": "att1304592386",
+                    "type": "attachment",
+                    "title": "diagram.png",
+                    "extensions": {"mediaType": "image/png", "fileSize": 3},
+                    "_links": {"download": "/download/attachments/1/diagram.png"},
+                    "version": {"number": 2},
+                }
+            ]
+        }
+        session = oauth_attachments_mixin.confluence._session
+        session.put.return_value = response
+
+        result = oauth_attachments_mixin.upload_attachment_from_content(
+            "1289158692", "diagram.png", b"png", comment="v0.5", minor_edit=True
+        )
+
+        assert result["success"] is True
+        assert result["id"] == "att1304592386"
+        session.put.assert_called_once()
+        session.post.assert_not_called()
+        session.get.assert_not_called()
+        assert session.put.call_args[0][0] == (
+            "https://api.atlassian.com/ex/confluence/cloud-id"
+            "/wiki/rest/api/content/1289158692/child/attachment"
+        )
+        kwargs = session.put.call_args[1]
+        assert kwargs["headers"]["X-Atlassian-Token"] == "no-check"
+        assert kwargs["data"]["minorEdit"] == "true"
+        assert kwargs["files"]["file"] == ("diagram.png", b"png", "image/png")
+        assert kwargs["files"]["comment"] == (None, "v0.5", "text/plain; charset=utf-8")
+
+    def test_upload_put_error_is_reported(self, oauth_attachments_mixin):
+        """A failing PUT surfaces as an unsuccessful result, with no fallback."""
+        response = Mock()
+        response.status_code = 401
+        response.text = "scope does not match"
+        response.raise_for_status.side_effect = HTTPError(response=response)
+        session = oauth_attachments_mixin.confluence._session
+        session.put.return_value = response
+
+        result = oauth_attachments_mixin.upload_attachment_from_content(
+            "1289158692", "diagram.png", b"png"
+        )
+
+        assert result["success"] is False
+        session.put.assert_called_once()
+        session.get.assert_not_called()
