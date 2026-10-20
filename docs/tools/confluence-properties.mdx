@@ -1,0 +1,48 @@
+---
+title: "Confluence Properties"
+description: "Read, set and delete content properties on pages"
+---
+
+### Get Page Properties
+
+List the content properties stored on a Confluence page.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `page_id` | `string` | Yes | Confluence page ID (numeric ID from the page URL). |
+| `key` | `string` | No | (Optional) Return only the property with this key. |
+
+---
+
+### Set Page Property
+
+Create or update a content property on a Confluence page.
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `page_id` | `string` | Yes | Confluence page ID (numeric ID from the page URL). |
+| `key` | `string` | Yes | Property key. Created if absent, updated if present. |
+| `value` | `string` | Yes | The value as JSON text, e.g. '`{"owner": "fde"}`', '[1, 2]', '"text"' or '42'. Text that is not valid JSON is stored as a plain string. |
+
+---
+
+### Delete Page Property
+
+Delete a content property from a Confluence page.
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `page_id` | `string` | Yes | Confluence page ID (numeric ID from the page URL). |
+| `key` | `string` | Yes | Property key to delete. |
+
+---

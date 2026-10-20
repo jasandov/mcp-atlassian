@@ -715,3 +715,133 @@ class TestConfluenceV2AdapterComments:
         assert payload["pageId"] == "12345"
         assert "parentCommentId" not in payload
         assert result["id"] == "333444555"
+
+
+class TestConfluenceV2AdapterPageProperties:
+    """Tests for the v2 page property operations."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Create a mock session."""
+        return MagicMock(spec=requests.Session)
+
+    @pytest.fixture
+    def v2_adapter(self, mock_session):
+        """Create a ConfluenceV2Adapter instance."""
+        return ConfluenceV2Adapter(
+            session=mock_session, base_url="https://example.atlassian.net/wiki"
+        )
+
+    @staticmethod
+    def _response(payload, status=200):
+        response = Mock()
+        response.status_code = status
+        response.links = {}
+        response.json.return_value = payload
+        return response
+
+    def test_get_page_properties_filters_by_key(self, v2_adapter, mock_session):
+        """The key filter is passed through and results flattened."""
+        mock_session.get.return_value = self._response(
+            {
+                "results": [
+                    {
+                        "id": "7",
+                        "key": "owner",
+                        "value": {"team": "fde"},
+                        "version": {"number": 2},
+                    }
+                ],
+                "_links": {},
+            }
+        )
+
+        result = v2_adapter.get_page_properties("1", key="owner")
+
+        mock_session.get.assert_called_once_with(
+            "https://example.atlassian.net/wiki/api/v2/pages/1/properties",
+            params={"limit": 250, "key": "owner"},
+        )
+        assert result == [
+            {"id": "7", "key": "owner", "value": {"team": "fde"}, "version": 2}
+        ]
+
+    def test_set_page_property_creates_with_post(self, v2_adapter, mock_session):
+        """An absent key is created with POST."""
+        mock_session.get.return_value = self._response({"results": [], "_links": {}})
+        mock_session.post.return_value = self._response(
+            {"id": "8", "key": "owner", "value": "fde", "version": {"number": 1}}
+        )
+
+        result = v2_adapter.set_page_property("1", "owner", "fde")
+
+        mock_session.post.assert_called_once_with(
+            "https://example.atlassian.net/wiki/api/v2/pages/1/properties",
+            json={"key": "owner", "value": "fde"},
+        )
+        mock_session.put.assert_not_called()
+        assert result == {"id": "8", "key": "owner", "value": "fde", "version": 1}
+
+    def test_set_page_property_updates_by_id(self, v2_adapter, mock_session):
+        """An existing key is updated by property id at the next version."""
+        mock_session.get.return_value = self._response(
+            {
+                "results": [
+                    {
+                        "id": "8",
+                        "key": "owner",
+                        "value": "fde",
+                        "version": {"number": 4},
+                    }
+                ],
+                "_links": {},
+            }
+        )
+        mock_session.put.return_value = self._response(
+            {"id": "8", "key": "owner", "value": "ops", "version": {"number": 5}}
+        )
+
+        result = v2_adapter.set_page_property("1", "owner", "ops")
+
+        mock_session.put.assert_called_once_with(
+            "https://example.atlassian.net/wiki/api/v2/pages/1/properties/8",
+            json={"key": "owner", "value": "ops", "version": {"number": 5}},
+        )
+        mock_session.post.assert_not_called()
+        assert result["version"] == 5
+
+    def test_delete_page_property_by_id(self, v2_adapter, mock_session):
+        """Delete resolves the id by key; a missing key returns False."""
+        mock_session.get.return_value = self._response(
+            {
+                "results": [
+                    {
+                        "id": "8",
+                        "key": "owner",
+                        "value": "fde",
+                        "version": {"number": 1},
+                    }
+                ],
+                "_links": {},
+            }
+        )
+        mock_session.delete.return_value = self._response({}, status=204)
+
+        assert v2_adapter.delete_page_property("1", "owner") is True
+        mock_session.delete.assert_called_once_with(
+            "https://example.atlassian.net/wiki/api/v2/pages/1/properties/8"
+        )
+
+        mock_session.get.return_value = self._response({"results": [], "_links": {}})
+        assert v2_adapter.delete_page_property("1", "nope") is False
+
+    def test_http_error_is_reported(self, v2_adapter, mock_session):
+        """An HTTP error becomes a ValueError."""
+        response = Mock()
+        response.status_code = 403
+        response.text = "forbidden"
+        response.raise_for_status.side_effect = HTTPError(response=response)
+        mock_session.get.return_value = response
+
+        with pytest.raises(ValueError, match="Failed to list properties for page '1'"):
+            v2_adapter.get_page_properties("1")

@@ -3139,3 +3139,120 @@ async def get_space_permissions(
         cursor=cursor,
     )
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "read", "toolset:confluence_properties"},
+    annotations={"title": "Get Page Properties", "readOnlyHint": True},
+)
+async def get_page_properties(
+    ctx: Context,
+    page_id: Annotated[
+        str,
+        Field(description="Confluence page ID (numeric ID from the page URL)."),
+    ],
+    key: Annotated[
+        str | None,
+        Field(
+            description="(Optional) Return only the property with this key.",
+            default=None,
+        ),
+    ] = None,
+) -> str:
+    """List the content properties stored on a Confluence page.
+
+    Content properties are JSON values kept against a page under a key, used
+    by apps and automation to attach structured data without changing the
+    page body.
+
+    Args:
+        ctx: The FastMCP context.
+        page_id: The page ID.
+        key: Optional key filter.
+
+    Returns:
+        JSON string with a list of properties, each with id, key, value and
+        version.
+    """
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    properties = confluence_fetcher.get_page_properties(page_id, key=key)
+    return json.dumps(properties, indent=2, ensure_ascii=False)
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "write", "toolset:confluence_properties"},
+    annotations={"title": "Set Page Property", "destructiveHint": False},
+)
+@check_write_access
+async def set_page_property(
+    ctx: Context,
+    page_id: Annotated[
+        str,
+        Field(description="Confluence page ID (numeric ID from the page URL)."),
+    ],
+    key: Annotated[
+        str,
+        Field(description="Property key. Created if absent, updated if present."),
+    ],
+    value: Annotated[
+        str,
+        Field(
+            description=(
+                "The value as JSON text, e.g. '{\"owner\": \"fde\"}', '[1, 2]', "
+                "'\"text\"' or '42'. Text that is not valid JSON is stored as a "
+                "plain string."
+            )
+        ),
+    ],
+) -> str:
+    """Create or update a content property on a Confluence page.
+
+    Args:
+        ctx: The FastMCP context.
+        page_id: The page ID.
+        key: The property key.
+        value: The value as JSON text.
+
+    Returns:
+        JSON string with the stored property's id, key, value and version.
+    """
+    try:
+        parsed_value = json.loads(value)
+    except ValueError:
+        parsed_value = value
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    stored = confluence_fetcher.set_page_property(page_id, key, parsed_value)
+    return json.dumps(stored, indent=2, ensure_ascii=False)
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "write", "toolset:confluence_properties"},
+    annotations={"title": "Delete Page Property", "destructiveHint": True},
+)
+@check_write_access
+async def delete_page_property(
+    ctx: Context,
+    page_id: Annotated[
+        str,
+        Field(description="Confluence page ID (numeric ID from the page URL)."),
+    ],
+    key: Annotated[str, Field(description="Property key to delete.")],
+) -> str:
+    """Delete a content property from a Confluence page.
+
+    Args:
+        ctx: The FastMCP context.
+        page_id: The page ID.
+        key: The property key.
+
+    Returns:
+        JSON string with success (True if a property was deleted, False if none
+        had that key), page_id and key.
+    """
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    deleted = confluence_fetcher.delete_page_property(page_id, key)
+    return json.dumps(
+        {"success": deleted, "page_id": page_id, "key": key},
+        indent=2,
+        ensure_ascii=False,
+    )

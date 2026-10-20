@@ -89,7 +89,8 @@
               "docs/tools/confluence-attachments",
               "docs/tools/confluence-comments",
               "docs/tools/confluence-permissions",
-              "docs/tools/confluence-templates"
+              "docs/tools/confluence-templates",
+              "docs/tools/confluence-properties"
             ]
           },
           {

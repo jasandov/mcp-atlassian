@@ -156,6 +156,11 @@ CATEGORY_TOOLS: dict[str, list[str]] = {
         "confluence_get_page_template",
         "confluence_create_page_from_template",
     ],
+    "confluence-properties": [
+        "confluence_get_page_properties",
+        "confluence_set_page_property",
+        "confluence_delete_page_property",
+    ],
 }
 
 CATEGORY_META: dict[str, dict[str, str]] = {
@@ -217,6 +222,10 @@ CATEGORY_META: dict[str, dict[str, str]] = {
     "confluence-templates": {
         "title": "Confluence Templates",
         "description": "List page templates and create pages from them",
+    },
+    "confluence-properties": {
+        "title": "Confluence Properties",
+        "description": "Read, set and delete content properties on pages",
     },
 }
 

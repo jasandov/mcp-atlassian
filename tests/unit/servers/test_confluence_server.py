@@ -178,6 +178,16 @@ def mock_confluence_fetcher():
         ],
         "_links": {},
     }
+    mock_fetcher.get_page_properties.return_value = [
+        {"id": "prop-1", "key": "owner", "value": {"team": "fde"}, "version": 2}
+    ]
+    mock_fetcher.set_page_property.return_value = {
+        "id": "prop-1",
+        "key": "owner",
+        "value": {"team": "fde"},
+        "version": 3,
+    }
+    mock_fetcher.delete_page_property.return_value = True
     mock_fetcher.list_page_templates.return_value = [
         {
             "templateId": "tpl-001",
@@ -238,6 +248,7 @@ def test_confluence_mcp(mock_confluence_fetcher, mock_base_confluence_config):
         create_page_from_template,
         delete_attachment,
         delete_page,
+        delete_page_property,
         download_attachment,
         download_content_attachments,
         get_attachments,
@@ -247,12 +258,14 @@ def test_confluence_mcp(mock_confluence_fetcher, mock_base_confluence_config):
         get_page,
         get_page_children,
         get_page_images,
+        get_page_properties,
         get_page_template,
         get_space_page_tree,
         get_space_permissions,
         list_page_templates,
         search,
         search_user,
+        set_page_property,
         update_page,
         update_page_section,
         upload_attachment,
@@ -303,6 +316,9 @@ def test_confluence_mcp(mock_confluence_fetcher, mock_base_confluence_config):
     confluence_sub_mcp.add_tool(get_page_template)
     confluence_sub_mcp.add_tool(create_page_from_template)
 
+    confluence_sub_mcp.add_tool(get_page_properties)
+    confluence_sub_mcp.add_tool(set_page_property)
+    confluence_sub_mcp.add_tool(delete_page_property)
     test_mcp.mount(confluence_sub_mcp, namespace="confluence")
 
     return test_mcp
@@ -321,6 +337,7 @@ def no_fetcher_test_confluence_mcp(mock_base_confluence_config):
         create_page_from_template,
         delete_attachment,
         delete_page,
+        delete_page_property,
         download_attachment,
         download_content_attachments,
         get_attachments,
@@ -330,12 +347,14 @@ def no_fetcher_test_confluence_mcp(mock_base_confluence_config):
         get_page,
         get_page_children,
         get_page_images,
+        get_page_properties,
         get_page_template,
         get_space_page_tree,
         get_space_permissions,
         list_page_templates,
         search,
         search_user,
+        set_page_property,
         update_page,
         update_page_section,
         upload_attachment,
@@ -388,6 +407,9 @@ def no_fetcher_test_confluence_mcp(mock_base_confluence_config):
     confluence_sub_mcp.add_tool(get_page_template)
     confluence_sub_mcp.add_tool(create_page_from_template)
 
+    confluence_sub_mcp.add_tool(get_page_properties)
+    confluence_sub_mcp.add_tool(set_page_property)
+    confluence_sub_mcp.add_tool(delete_page_property)
     test_mcp.mount(confluence_sub_mcp, namespace="confluence")
 
     return test_mcp
@@ -1732,3 +1754,56 @@ async def test_get_page_images_fetch_failure(client, mock_confluence_fetcher):
     summary = json.loads(response.content[0].text)
     assert summary["downloaded"] == 0
     assert len(summary["failed"]) == 1
+
+
+@pytest.mark.anyio
+async def test_get_page_properties(client, mock_confluence_fetcher):
+    """Test listing page properties with a key filter."""
+    response = await client.call_tool(
+        "confluence_get_page_properties", {"page_id": "123456", "key": "owner"}
+    )
+    mock_confluence_fetcher.get_page_properties.assert_called_once_with(
+        "123456", key="owner"
+    )
+    result_data = json.loads(response.content[0].text)
+    assert result_data[0]["key"] == "owner"
+    assert result_data[0]["value"] == {"team": "fde"}
+
+
+@pytest.mark.anyio
+async def test_set_page_property_parses_json(client, mock_confluence_fetcher):
+    """A JSON value is parsed before it is stored."""
+    response = await client.call_tool(
+        "confluence_set_page_property",
+        {"page_id": "123456", "key": "owner", "value": '{"team": "fde"}'},
+    )
+    mock_confluence_fetcher.set_page_property.assert_called_once_with(
+        "123456", "owner", {"team": "fde"}
+    )
+    result_data = json.loads(response.content[0].text)
+    assert result_data["version"] == 3
+
+
+@pytest.mark.anyio
+async def test_set_page_property_keeps_plain_text(client, mock_confluence_fetcher):
+    """Text that is not JSON is stored as a string."""
+    await client.call_tool(
+        "confluence_set_page_property",
+        {"page_id": "123456", "key": "note", "value": "not json"},
+    )
+    mock_confluence_fetcher.set_page_property.assert_called_once_with(
+        "123456", "note", "not json"
+    )
+
+
+@pytest.mark.anyio
+async def test_delete_page_property(client, mock_confluence_fetcher):
+    """Test deleting a page property."""
+    response = await client.call_tool(
+        "confluence_delete_page_property", {"page_id": "123456", "key": "owner"}
+    )
+    mock_confluence_fetcher.delete_page_property.assert_called_once_with(
+        "123456", "owner"
+    )
+    result_data = json.loads(response.content[0].text)
+    assert result_data == {"success": True, "page_id": "123456", "key": "owner"}

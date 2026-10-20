@@ -1172,6 +1172,138 @@ class ConfluenceV2Adapter:
         except Exception:
             return None
 
+    @staticmethod
+    def _normalize_property(data: dict[str, Any]) -> dict[str, Any]:
+        """Flatten a v2 content property to id, key, value and version number."""
+        version = data.get("version") or {}
+        return {
+            "id": str(data.get("id", "")),
+            "key": str(data.get("key", "")),
+            "value": data.get("value"),
+            "version": version.get("number") if isinstance(version, dict) else None,
+        }
+
+    def get_page_properties(
+        self, page_id: str, key: str | None = None
+    ) -> list[dict[str, Any]]:
+        """List a page's content properties using the v2 API.
+
+        Args:
+            page_id: The ID of the page.
+            key: Optional property key to filter on.
+
+        Returns:
+            Properties as dicts with id, key, value and version number.
+
+        Raises:
+            ValueError: If the request fails.
+        """
+        try:
+            url = f"{self.base_url}/api/v2/pages/{page_id}/properties"
+            params: dict[str, Any] = {"limit": 250}
+            if key:
+                params["key"] = key
+            raw = self._get_all_comment_results(url, params=params)
+            return [self._normalize_property(item) for item in raw]
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error listing properties for page '{page_id}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error listing properties for page '{page_id}': {e}")
+            raise ValueError(
+                f"Failed to list properties for page '{page_id}': {e}"
+            ) from e
+
+    def set_page_property(self, page_id: str, key: str, value: Any) -> dict[str, Any]:
+        """Create or update a page content property using the v2 API.
+
+        v2 addresses a property by its id, so an existing key is looked up
+        first and updated at the next version; otherwise it is created.
+
+        Args:
+            page_id: The ID of the page.
+            key: The property key.
+            value: The JSON-serialisable value to store.
+
+        Returns:
+            The stored property as a dict with id, key, value and version.
+
+        Raises:
+            ValueError: If the request fails.
+        """
+        try:
+            existing = self.get_page_properties(page_id, key=key)
+            if existing:
+                current = existing[0]
+                url = (
+                    f"{self.base_url}/api/v2/pages/{page_id}/properties/{current['id']}"
+                )
+                data = {
+                    "key": key,
+                    "value": value,
+                    "version": {"number": int(current.get("version") or 0) + 1},
+                }
+                response = self.session.put(url, json=data)
+            else:
+                url = f"{self.base_url}/api/v2/pages/{page_id}/properties"
+                response = self.session.post(url, json={"key": key, "value": value})
+            response.raise_for_status()
+            return self._normalize_property(response.json())
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error setting property '{key}' on page '{page_id}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error setting property '{key}' on page '{page_id}': {e}")
+            raise ValueError(
+                f"Failed to set property '{key}' on page '{page_id}': {e}"
+            ) from e
+
+    def delete_page_property(self, page_id: str, key: str) -> bool:
+        """Delete a page content property by key using the v2 API.
+
+        Args:
+            page_id: The ID of the page.
+            key: The property key.
+
+        Returns:
+            True if a property was deleted, False if none had that key.
+
+        Raises:
+            ValueError: If the request fails.
+        """
+        try:
+            existing = self.get_page_properties(page_id, key=key)
+            if not existing:
+                return False
+            url = (
+                f"{self.base_url}/api/v2/pages/{page_id}/properties/{existing[0]['id']}"
+            )
+            response = self.session.delete(url)
+            response.raise_for_status()
+            return True
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error deleting property '{key}' on page '{page_id}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(
+                    f"Error deleting property '{key}' on page '{page_id}': {e}"
+                )
+            raise ValueError(
+                f"Failed to delete property '{key}' on page '{page_id}': {e}"
+            ) from e
+
     def get_page_versions_list(self, page_id: str) -> list[dict[str, Any]]:
         """Get list of all versions for a page using v2 API.
 
