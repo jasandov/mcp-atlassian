@@ -1,17 +1,64 @@
 """Module for Confluence space operations."""
 
 import logging
-from typing import cast
+from typing import Any, cast
 
 import requests
 
 from .client import ConfluenceClient
+from .v2_adapter import ConfluenceV2Adapter
 
 logger = logging.getLogger("mcp-atlassian")
 
 
 class SpacesMixin(ConfluenceClient):
     """Mixin for Confluence space operations."""
+
+    @property
+    def _v2_adapter(self) -> ConfluenceV2Adapter | None:
+        """Get the v2 API adapter for Cloud OAuth, where v1 space reads are gone."""
+        if self.config.auth_type == "oauth" and self.config.is_cloud:
+            return ConfluenceV2Adapter(
+                session=self.confluence._session, base_url=self.confluence.url
+            )
+        return None
+
+    def get_space_details(self, space_key: str) -> dict[str, Any]:
+        """Get a space by key.
+
+        Args:
+            space_key: The space key, for example ``DEV`` or ``~accountid``.
+
+        Returns:
+            The space's id, key, name, type, status, homepage id and plain-text
+            description. The numeric id is what the v2 space endpoints take.
+
+        Raises:
+            ValueError: If the space is not found or the request fails.
+        """
+        v2_adapter = self._v2_adapter
+        if v2_adapter:
+            return v2_adapter.get_space_by_key(space_key)
+
+        space = self.confluence.get_space(
+            space_key, expand="description.plain,homepage"
+        )
+        if not isinstance(space, dict) or not space.get("key"):
+            raise ValueError(f"Space with key '{space_key}' not found")
+        homepage = space.get("homepage") or {}
+        description = space.get("description") or {}
+        plain = description.get("plain") if isinstance(description, dict) else None
+        return {
+            "id": str(space.get("id", "")),
+            "key": str(space.get("key", "")),
+            "name": str(space.get("name") or ""),
+            "type": str(space.get("type") or ""),
+            "status": str(space.get("status") or ""),
+            "homepage_id": str(homepage["id"]) if homepage.get("id") else None,
+            "description": (
+                str(plain.get("value") or "") if isinstance(plain, dict) else ""
+            ),
+        }
 
     def get_spaces(self, start: int = 0, limit: int = 10) -> dict[str, object]:
         """

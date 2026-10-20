@@ -115,6 +115,7 @@ CATEGORY_TOOLS: dict[str, list[str]] = {
         "confluence_update_page",
         "confluence_delete_page",
         "confluence_get_page_children",
+        "confluence_get_space",
         "confluence_get_space_page_tree",
         "confluence_get_page_history",
         "confluence_update_page_section",
@@ -155,6 +156,15 @@ CATEGORY_TOOLS: dict[str, list[str]] = {
         "confluence_list_page_templates",
         "confluence_get_page_template",
         "confluence_create_page_from_template",
+    ],
+    "confluence-properties": [
+        "confluence_get_page_properties",
+        "confluence_set_page_property",
+        "confluence_delete_page_property",
+    ],
+    "confluence-tasks": [
+        "confluence_get_tasks",
+        "confluence_update_task",
     ],
 }
 
@@ -217,6 +227,14 @@ CATEGORY_META: dict[str, dict[str, str]] = {
     "confluence-templates": {
         "title": "Confluence Templates",
         "description": "List page templates and create pages from them",
+    },
+    "confluence-properties": {
+        "title": "Confluence Properties",
+        "description": "Read, set and delete content properties on pages",
+    },
+    "confluence-tasks": {
+        "title": "Confluence Tasks",
+        "description": "List and complete inline tasks on pages",
     },
 }
 

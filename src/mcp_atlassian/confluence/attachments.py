@@ -1,6 +1,7 @@
 """Attachment operations for Confluence API."""
 
 import logging
+import mimetypes
 import os
 import urllib.parse
 from pathlib import Path
@@ -708,8 +709,12 @@ class AttachmentsMixin(ConfluenceClient, AttachmentsOperationsProto):
             Attachment metadata dict.
         """
 
+        # Name the media type from the filename so Confluence stores a PNG as
+        # image/png rather than application/octet-stream.
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
         def make_files(content: Any) -> dict[str, Any]:
-            files: dict[str, Any] = {"file": (filename, content)}
+            files: dict[str, Any] = {"file": (filename, content, content_type)}
             if comment:
                 files["comment"] = (None, comment, "text/plain; charset=utf-8")
             return files
@@ -723,6 +728,18 @@ class AttachmentsMixin(ConfluenceClient, AttachmentsOperationsProto):
         data: dict[str, str] = {}
         if minor_edit is not None:
             data["minorEdit"] = str(minor_edit).lower()
+
+        if self.config.auth_type == "oauth" and self.config.is_cloud:
+            # Cloud OAuth: PUT on the list endpoint is Atlassian's
+            # "create or update attachment" and versions an existing name in
+            # one call. The POST path below cannot version there, because
+            # its lookup of the existing attachment reads a v1 endpoint the
+            # OAuth gateway has removed (410 Gone).
+            response = self.confluence._session.put(
+                url, headers=headers, files=make_files(file_obj), data=data
+            )
+            response.raise_for_status()
+            return self._first_attachment_result(response.json())
 
         # Use POST to create a new attachment on Server/DC. PUT on the list
         # endpoint is not supported by Confluence Server/DC.
@@ -760,11 +777,11 @@ class AttachmentsMixin(ConfluenceClient, AttachmentsOperationsProto):
                 )
 
         response.raise_for_status()
+        return self._first_attachment_result(response.json())
 
-        # Parse response
-        result = response.json()
-
-        # Return first result if it's a list
+    @staticmethod
+    def _first_attachment_result(result: Any) -> dict[str, Any]:
+        """Return the first attachment from a results list, or the result itself."""
         if isinstance(result, dict) and "results" in result:
             results = result.get("results", [])
             return results[0] if results else result

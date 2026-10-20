@@ -513,6 +513,42 @@ async def get_page_children(
 
 @confluence_mcp.tool(
     tags={"confluence", "read", "toolset:confluence_pages"},
+    annotations={"title": "Get Space", "readOnlyHint": True},
+)
+async def get_space(
+    ctx: Context,
+    space_key: Annotated[
+        str,
+        Field(
+            description=(
+                "Space key, as shown in the space URL. Examples: 'DEV', 'TEAM', "
+                "or a personal space key such as '~712020:0f8c12c2-...'."
+            )
+        ),
+    ],
+) -> str:
+    """Get a Confluence space by its key.
+
+    Returns the space's numeric id, key, name, type, status, homepage id and
+    plain-text description. The numeric id is what
+    confluence_get_space_permissions and the other v2 space endpoints take;
+    the key alone is not accepted there.
+
+    Args:
+        ctx: The FastMCP context.
+        space_key: The space key.
+
+    Returns:
+        JSON string with the space's id, key, name, type, status,
+        homepage_id and description.
+    """
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    space = confluence_fetcher.get_space_details(space_key)
+    return json.dumps(space, indent=2, ensure_ascii=False)
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "read", "toolset:confluence_pages"},
     annotations={"title": "Get Space Page Tree", "readOnlyHint": True},
 )
 async def get_space_page_tree(
@@ -3139,3 +3175,221 @@ async def get_space_permissions(
         cursor=cursor,
     )
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "read", "toolset:confluence_properties"},
+    annotations={"title": "Get Page Properties", "readOnlyHint": True},
+)
+async def get_page_properties(
+    ctx: Context,
+    page_id: Annotated[
+        str,
+        Field(description="Confluence page ID (numeric ID from the page URL)."),
+    ],
+    key: Annotated[
+        str | None,
+        Field(
+            description="(Optional) Return only the property with this key.",
+            default=None,
+        ),
+    ] = None,
+) -> str:
+    """List the content properties stored on a Confluence page.
+
+    Content properties are JSON values kept against a page under a key, used
+    by apps and automation to attach structured data without changing the
+    page body.
+
+    Args:
+        ctx: The FastMCP context.
+        page_id: The page ID.
+        key: Optional key filter.
+
+    Returns:
+        JSON string with a list of properties, each with id, key, value and
+        version.
+    """
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    properties = confluence_fetcher.get_page_properties(page_id, key=key)
+    return json.dumps(properties, indent=2, ensure_ascii=False)
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "write", "toolset:confluence_properties"},
+    annotations={"title": "Set Page Property", "destructiveHint": False},
+)
+@check_write_access
+async def set_page_property(
+    ctx: Context,
+    page_id: Annotated[
+        str,
+        Field(description="Confluence page ID (numeric ID from the page URL)."),
+    ],
+    key: Annotated[
+        str,
+        Field(description="Property key. Created if absent, updated if present."),
+    ],
+    value: Annotated[
+        str,
+        Field(
+            description=(
+                "The value as JSON text, e.g. '{\"owner\": \"fde\"}', '[1, 2]', "
+                "'\"text\"' or '42'. Text that is not valid JSON is stored as a "
+                "plain string."
+            )
+        ),
+    ],
+) -> str:
+    """Create or update a content property on a Confluence page.
+
+    Args:
+        ctx: The FastMCP context.
+        page_id: The page ID.
+        key: The property key.
+        value: The value as JSON text.
+
+    Returns:
+        JSON string with the stored property's id, key, value and version.
+    """
+    try:
+        parsed_value = json.loads(value)
+    except ValueError:
+        parsed_value = value
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    stored = confluence_fetcher.set_page_property(page_id, key, parsed_value)
+    return json.dumps(stored, indent=2, ensure_ascii=False)
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "write", "toolset:confluence_properties"},
+    annotations={"title": "Delete Page Property", "destructiveHint": True},
+)
+@check_write_access
+async def delete_page_property(
+    ctx: Context,
+    page_id: Annotated[
+        str,
+        Field(description="Confluence page ID (numeric ID from the page URL)."),
+    ],
+    key: Annotated[str, Field(description="Property key to delete.")],
+) -> str:
+    """Delete a content property from a Confluence page.
+
+    Args:
+        ctx: The FastMCP context.
+        page_id: The page ID.
+        key: The property key.
+
+    Returns:
+        JSON string with success (True if a property was deleted, False if none
+        had that key), page_id and key.
+    """
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    deleted = confluence_fetcher.delete_page_property(page_id, key)
+    return json.dumps(
+        {"success": deleted, "page_id": page_id, "key": key},
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "read", "toolset:confluence_tasks"},
+    annotations={"title": "Get Tasks", "readOnlyHint": True},
+)
+async def get_tasks(
+    ctx: Context,
+    page_id: Annotated[
+        str | None,
+        Field(description="(Optional) Only tasks on this page ID.", default=None),
+    ] = None,
+    space_id: Annotated[
+        str | None,
+        Field(
+            description=(
+                "(Optional) Only tasks in this space, by numeric space id "
+                "(see confluence_get_space)."
+            ),
+            default=None,
+        ),
+    ] = None,
+    status: Annotated[
+        str | None,
+        Field(
+            description="(Optional) 'complete' or 'incomplete'.",
+            default=None,
+        ),
+    ] = None,
+    assigned_to: Annotated[
+        str | None,
+        Field(
+            description="(Optional) Only tasks assigned to this account ID.",
+            default=None,
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Field(description="Maximum number of tasks to return.", default=50, ge=1),
+    ] = 50,
+) -> str:
+    """List inline tasks, the checkbox items on Confluence pages.
+
+    This tool is only available for Confluence Cloud.
+
+    Args:
+        ctx: The FastMCP context.
+        page_id: Only tasks on this page.
+        space_id: Only tasks in this space.
+        status: 'complete' or 'incomplete'.
+        assigned_to: Only tasks assigned to this account ID.
+        limit: Maximum number of tasks.
+
+    Returns:
+        JSON string with a list of tasks: id, local_id, status, body (markdown),
+        page_id, assigned_to, due_at and the other dates when set.
+    """
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    tasks = confluence_fetcher.get_tasks(
+        page_id=page_id,
+        space_id=space_id,
+        status=status,
+        assigned_to=assigned_to,
+        limit=limit,
+    )
+    return json.dumps(
+        [task.to_simplified_dict() for task in tasks], indent=2, ensure_ascii=False
+    )
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "write", "toolset:confluence_tasks"},
+    annotations={"title": "Update Task", "destructiveHint": False},
+)
+@check_write_access
+async def update_task(
+    ctx: Context,
+    task_id: Annotated[
+        str,
+        Field(description="Task ID, as returned by confluence_get_tasks."),
+    ],
+    status: Annotated[
+        str,
+        Field(description="New status: 'complete' or 'incomplete'."),
+    ],
+) -> str:
+    """Mark an inline task complete or incomplete.
+
+    This tool is only available for Confluence Cloud.
+
+    Args:
+        ctx: The FastMCP context.
+        task_id: The task ID.
+        status: 'complete' or 'incomplete'.
+
+    Returns:
+        JSON string with the updated task.
+    """
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    task = confluence_fetcher.update_task(task_id, status)
+    return json.dumps(task.to_simplified_dict(), indent=2, ensure_ascii=False)

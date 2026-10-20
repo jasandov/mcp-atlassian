@@ -16,6 +16,7 @@ from starlette.requests import Request
 from src.mcp_atlassian.confluence import ConfluenceFetcher
 from src.mcp_atlassian.confluence.config import ConfluenceConfig
 from src.mcp_atlassian.models.confluence.page import ConfluencePage
+from src.mcp_atlassian.models.confluence.task import ConfluenceTask
 from src.mcp_atlassian.servers import confluence as confluence_server
 from src.mcp_atlassian.servers.context import MainAppContext
 from src.mcp_atlassian.servers.main import AtlassianMCP
@@ -178,6 +179,35 @@ def mock_confluence_fetcher():
         ],
         "_links": {},
     }
+    mock_fetcher.get_space_details.return_value = {
+        "id": "120193605",
+        "key": "TEST",
+        "name": "Test Space",
+        "type": "global",
+        "status": "current",
+        "homepage_id": "76514202",
+        "description": "A space for tests",
+    }
+    mock_fetcher.get_page_properties.return_value = [
+        {"id": "prop-1", "key": "owner", "value": {"team": "fde"}, "version": 2}
+    ]
+    mock_fetcher.set_page_property.return_value = {
+        "id": "prop-1",
+        "key": "owner",
+        "value": {"team": "fde"},
+        "version": 3,
+    }
+    mock_fetcher.delete_page_property.return_value = True
+    mock_task = MagicMock(spec=ConfluenceTask)
+    mock_task.to_simplified_dict.return_value = {
+        "id": "task-1",
+        "local_id": "7",
+        "status": "incomplete",
+        "body": "Write the handoff",
+        "page_id": "123456",
+    }
+    mock_fetcher.get_tasks.return_value = [mock_task]
+    mock_fetcher.update_task.return_value = mock_task
     mock_fetcher.list_page_templates.return_value = [
         {
             "templateId": "tpl-001",
@@ -238,6 +268,7 @@ def test_confluence_mcp(mock_confluence_fetcher, mock_base_confluence_config):
         create_page_from_template,
         delete_attachment,
         delete_page,
+        delete_page_property,
         download_attachment,
         download_content_attachments,
         get_attachments,
@@ -247,14 +278,19 @@ def test_confluence_mcp(mock_confluence_fetcher, mock_base_confluence_config):
         get_page,
         get_page_children,
         get_page_images,
+        get_page_properties,
         get_page_template,
+        get_space,
         get_space_page_tree,
         get_space_permissions,
+        get_tasks,
         list_page_templates,
         search,
         search_user,
+        set_page_property,
         update_page,
         update_page_section,
+        update_task,
         upload_attachment,
         upload_attachments,
     )
@@ -303,6 +339,12 @@ def test_confluence_mcp(mock_confluence_fetcher, mock_base_confluence_config):
     confluence_sub_mcp.add_tool(get_page_template)
     confluence_sub_mcp.add_tool(create_page_from_template)
 
+    confluence_sub_mcp.add_tool(get_space)
+    confluence_sub_mcp.add_tool(get_page_properties)
+    confluence_sub_mcp.add_tool(set_page_property)
+    confluence_sub_mcp.add_tool(delete_page_property)
+    confluence_sub_mcp.add_tool(get_tasks)
+    confluence_sub_mcp.add_tool(update_task)
     test_mcp.mount(confluence_sub_mcp, namespace="confluence")
 
     return test_mcp
@@ -321,6 +363,7 @@ def no_fetcher_test_confluence_mcp(mock_base_confluence_config):
         create_page_from_template,
         delete_attachment,
         delete_page,
+        delete_page_property,
         download_attachment,
         download_content_attachments,
         get_attachments,
@@ -330,14 +373,19 @@ def no_fetcher_test_confluence_mcp(mock_base_confluence_config):
         get_page,
         get_page_children,
         get_page_images,
+        get_page_properties,
         get_page_template,
+        get_space,
         get_space_page_tree,
         get_space_permissions,
+        get_tasks,
         list_page_templates,
         search,
         search_user,
+        set_page_property,
         update_page,
         update_page_section,
+        update_task,
         upload_attachment,
         upload_attachments,
     )
@@ -388,6 +436,12 @@ def no_fetcher_test_confluence_mcp(mock_base_confluence_config):
     confluence_sub_mcp.add_tool(get_page_template)
     confluence_sub_mcp.add_tool(create_page_from_template)
 
+    confluence_sub_mcp.add_tool(get_space)
+    confluence_sub_mcp.add_tool(get_page_properties)
+    confluence_sub_mcp.add_tool(set_page_property)
+    confluence_sub_mcp.add_tool(delete_page_property)
+    confluence_sub_mcp.add_tool(get_tasks)
+    confluence_sub_mcp.add_tool(update_task)
     test_mcp.mount(confluence_sub_mcp, namespace="confluence")
 
     return test_mcp
@@ -1732,3 +1786,97 @@ async def test_get_page_images_fetch_failure(client, mock_confluence_fetcher):
     summary = json.loads(response.content[0].text)
     assert summary["downloaded"] == 0
     assert len(summary["failed"]) == 1
+
+
+@pytest.mark.anyio
+async def test_get_space(client, mock_confluence_fetcher):
+    """Test looking a space up by key."""
+    response = await client.call_tool("confluence_get_space", {"space_key": "TEST"})
+    mock_confluence_fetcher.get_space_details.assert_called_once_with("TEST")
+    result_data = json.loads(response.content[0].text)
+    assert result_data["id"] == "120193605"
+    assert result_data["key"] == "TEST"
+    assert result_data["homepage_id"] == "76514202"
+
+
+@pytest.mark.anyio
+async def test_get_page_properties(client, mock_confluence_fetcher):
+    """Test listing page properties with a key filter."""
+    response = await client.call_tool(
+        "confluence_get_page_properties", {"page_id": "123456", "key": "owner"}
+    )
+    mock_confluence_fetcher.get_page_properties.assert_called_once_with(
+        "123456", key="owner"
+    )
+    result_data = json.loads(response.content[0].text)
+    assert result_data[0]["key"] == "owner"
+    assert result_data[0]["value"] == {"team": "fde"}
+
+
+@pytest.mark.anyio
+async def test_set_page_property_parses_json(client, mock_confluence_fetcher):
+    """A JSON value is parsed before it is stored."""
+    response = await client.call_tool(
+        "confluence_set_page_property",
+        {"page_id": "123456", "key": "owner", "value": '{"team": "fde"}'},
+    )
+    mock_confluence_fetcher.set_page_property.assert_called_once_with(
+        "123456", "owner", {"team": "fde"}
+    )
+    result_data = json.loads(response.content[0].text)
+    assert result_data["version"] == 3
+
+
+@pytest.mark.anyio
+async def test_set_page_property_keeps_plain_text(client, mock_confluence_fetcher):
+    """Text that is not JSON is stored as a string."""
+    await client.call_tool(
+        "confluence_set_page_property",
+        {"page_id": "123456", "key": "note", "value": "not json"},
+    )
+    mock_confluence_fetcher.set_page_property.assert_called_once_with(
+        "123456", "note", "not json"
+    )
+
+
+@pytest.mark.anyio
+async def test_delete_page_property(client, mock_confluence_fetcher):
+    """Test deleting a page property."""
+    response = await client.call_tool(
+        "confluence_delete_page_property", {"page_id": "123456", "key": "owner"}
+    )
+    mock_confluence_fetcher.delete_page_property.assert_called_once_with(
+        "123456", "owner"
+    )
+    result_data = json.loads(response.content[0].text)
+    assert result_data == {"success": True, "page_id": "123456", "key": "owner"}
+
+
+@pytest.mark.anyio
+async def test_get_tasks(client, mock_confluence_fetcher):
+    """Test listing inline tasks on a page."""
+    response = await client.call_tool(
+        "confluence_get_tasks",
+        {"page_id": "123456", "status": "incomplete", "limit": 10},
+    )
+    mock_confluence_fetcher.get_tasks.assert_called_once_with(
+        page_id="123456",
+        space_id=None,
+        status="incomplete",
+        assigned_to=None,
+        limit=10,
+    )
+    result_data = json.loads(response.content[0].text)
+    assert result_data[0]["id"] == "task-1"
+    assert result_data[0]["body"] == "Write the handoff"
+
+
+@pytest.mark.anyio
+async def test_update_task(client, mock_confluence_fetcher):
+    """Test completing an inline task."""
+    response = await client.call_tool(
+        "confluence_update_task", {"task_id": "task-1", "status": "complete"}
+    )
+    mock_confluence_fetcher.update_task.assert_called_once_with("task-1", "complete")
+    result_data = json.loads(response.content[0].text)
+    assert result_data["id"] == "task-1"

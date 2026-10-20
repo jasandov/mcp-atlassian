@@ -1,6 +1,6 @@
 """Unit tests for the SpacesMixin class."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
@@ -165,3 +165,70 @@ class TestSpacesMixin:
 
         # Assert
         assert result == {}
+
+
+class TestGetSpaceDetails:
+    """Tests for SpacesMixin.get_space_details."""
+
+    @pytest.fixture
+    def spaces_mixin(self, confluence_client):
+        """Create a SpacesMixin instance for testing."""
+        with patch(
+            "mcp_atlassian.confluence.spaces.ConfluenceClient.__init__"
+        ) as mock_init:
+            mock_init.return_value = None
+            mixin = SpacesMixin()
+            mixin.confluence = confluence_client.confluence
+            mixin.config = confluence_client.config
+            mixin.preprocessor = confluence_client.preprocessor
+            return mixin
+
+    def test_v1_response_is_flattened(self, spaces_mixin):
+        """Basic auth reads v1 and flattens homepage and description."""
+        spaces_mixin.confluence.get_space.return_value = {
+            "id": 120193605,
+            "key": "FDE",
+            "name": "Forward Deployed Engineering",
+            "type": "global",
+            "status": "current",
+            "homepage": {"id": 76514202, "title": "Home"},
+            "description": {"plain": {"value": "FDE space", "representation": "plain"}},
+        }
+
+        result = spaces_mixin.get_space_details("FDE")
+
+        spaces_mixin.confluence.get_space.assert_called_once_with(
+            "FDE", expand="description.plain,homepage"
+        )
+        assert result == {
+            "id": "120193605",
+            "key": "FDE",
+            "name": "Forward Deployed Engineering",
+            "type": "global",
+            "status": "current",
+            "homepage_id": "76514202",
+            "description": "FDE space",
+        }
+
+    def test_v1_missing_space_is_an_error(self, spaces_mixin):
+        """An empty v1 answer is reported as not found."""
+        spaces_mixin.confluence.get_space.return_value = {}
+
+        with pytest.raises(ValueError, match="Space with key 'NOPE' not found"):
+            spaces_mixin.get_space_details("NOPE")
+
+    def test_cloud_oauth_uses_v2(self, spaces_mixin):
+        """Cloud OAuth goes through the adapter and never calls v1."""
+        spaces_mixin.config.auth_type = "oauth"
+        with patch(
+            "mcp_atlassian.confluence.spaces.ConfluenceV2Adapter"
+        ) as adapter_class:
+            adapter = MagicMock()
+            adapter_class.return_value = adapter
+            adapter.get_space_by_key.return_value = {"id": "1", "key": "FDE"}
+
+            result = spaces_mixin.get_space_details("FDE")
+
+        adapter.get_space_by_key.assert_called_once_with("FDE")
+        spaces_mixin.confluence.get_space.assert_not_called()
+        assert result == {"id": "1", "key": "FDE"}

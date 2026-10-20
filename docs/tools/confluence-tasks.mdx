@@ -1,0 +1,35 @@
+---
+title: "Confluence Tasks"
+description: "List and complete inline tasks on pages"
+---
+
+### Get Tasks
+
+List inline tasks, the checkbox items on Confluence pages.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `page_id` | `string` | No | (Optional) Only tasks on this page ID. |
+| `space_id` | `string` | No | (Optional) Only tasks in this space, by numeric space id (see confluence_get_space). |
+| `status` | `string` | No | (Optional) 'complete' or 'incomplete'. |
+| `assigned_to` | `string` | No | (Optional) Only tasks assigned to this account ID. |
+| `limit` | `integer` | No | Maximum number of tasks to return. |
+
+---
+
+### Update Task
+
+Mark an inline task complete or incomplete.
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `task_id` | `string` | Yes | Task ID, as returned by confluence_get_tasks. |
+| `status` | `string` | Yes | New status: 'complete' or 'incomplete'. |
+
+---

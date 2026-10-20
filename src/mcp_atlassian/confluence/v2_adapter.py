@@ -299,6 +299,57 @@ class ConfluenceV2Adapter:
             # Return the space_id as fallback
             return {"id": space_id, "key": space_id, "name": f"Space {space_id}"}
 
+    @staticmethod
+    def _normalize_space(data: dict[str, Any]) -> dict[str, Any]:
+        """Flatten a v2 space object into the fields callers need."""
+        homepage_id = data.get("homepageId")
+        description = data.get("description") or {}
+        plain = description.get("plain") if isinstance(description, dict) else None
+        return {
+            "id": str(data.get("id", "")),
+            "key": str(data.get("key", "")),
+            "name": str(data.get("name") or ""),
+            "type": str(data.get("type") or ""),
+            "status": str(data.get("status") or ""),
+            "homepage_id": str(homepage_id) if homepage_id else None,
+            "description": (
+                str(plain.get("value") or "") if isinstance(plain, dict) else ""
+            ),
+        }
+
+    def get_space_by_key(self, space_key: str) -> dict[str, Any]:
+        """Look a space up by key using the v2 API.
+
+        Args:
+            space_key: The space key, for example ``DEV`` or ``~accountid``.
+
+        Returns:
+            The space's id, key, name, type, status, homepage id and plain-text
+            description.
+
+        Raises:
+            ValueError: If the space is not found or the request fails.
+        """
+        try:
+            url = f"{self.base_url}/api/v2/spaces"
+            params = {"keys": space_key, "description-format": "plain"}
+            response = self.session.get(url, params=params)
+            response.raise_for_status()
+            results = response.json().get("results", [])
+            if not results:
+                raise ValueError(f"Space with key '{space_key}' not found")
+            return self._normalize_space(results[0])
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error getting space '{space_key}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error getting space '{space_key}': {e}")
+            raise ValueError(f"Failed to get space '{space_key}': {e}") from e
+
     def _get_space_key_from_id(self, space_id: str) -> str:
         """Get space key from space ID using v2 API."""
         return self._get_space_from_id(space_id)["key"]
@@ -365,6 +416,78 @@ class ConfluenceV2Adapter:
             else:
                 logger.error(f"Error getting page '{page_id}': {e}")
             raise ValueError(f"Failed to get page '{page_id}': {e}") from e
+
+    def get_space_pages_for_tree(self, space_key: str, limit: int) -> dict[str, Any]:
+        """List a space's current pages for a page tree using the v2 API.
+
+        Confluence Cloud has removed the v1 space page listing from the OAuth
+        gateway (410 Gone). This reads ``/spaces/{id}/pages`` cursor by cursor
+        until ``limit`` pages are collected or the listing ends.
+
+        Args:
+            space_key: The key of the space
+            limit: Maximum number of pages to collect
+
+        Returns:
+            Dict with ``pages`` (id, title, parent_id, position per page) and
+            ``has_more`` (True when the listing had more pages than ``limit``).
+
+        Raises:
+            ValueError: If the space is unknown or a request fails
+        """
+        try:
+            space_id = self._get_space_id(space_key)
+            url = f"{self.base_url}/api/v2/spaces/{space_id}/pages"
+            pages: list[dict[str, Any]] = []
+            cursor: str | None = None
+            has_more = False
+
+            while True:
+                params: dict[str, Any] = {
+                    "status": "current",
+                    "limit": max(1, min(250, limit - len(pages))),
+                }
+                if cursor is not None:
+                    params["cursor"] = cursor
+
+                response = self.session.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+
+                for item in data.get("results", []):
+                    if not isinstance(item, dict):
+                        continue
+                    parent_id = item.get("parentId")
+                    pages.append(
+                        {
+                            "id": str(item.get("id", "")),
+                            "title": item.get("title") or "Untitled",
+                            "parent_id": str(parent_id) if parent_id else None,
+                            "position": item.get("position"),
+                        }
+                    )
+
+                cursor = self._comment_next_cursor(response, data)
+                if not cursor:
+                    break
+                if len(pages) >= limit:
+                    has_more = True
+                    break
+
+            logger.debug(f"Retrieved {len(pages)} pages for space '{space_key}' tree")
+            return {"pages": pages[:limit], "has_more": has_more}
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error listing pages for space '{space_key}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error listing pages for space '{space_key}': {e}")
+            raise ValueError(
+                f"Failed to list pages for space '{space_key}': {e}"
+            ) from e
 
     def get_page_direct_children(
         self,
@@ -741,6 +864,88 @@ class ConfluenceV2Adapter:
             msg = f"Failed to get inline comments for page '{page_id}': {e}"
             raise ValueError(msg) from e
 
+    def get_footer_comments(self, page_id: str) -> list[dict[str, Any]]:
+        """Get all footer comment threads for a page using the v2 API.
+
+        Confluence Cloud has removed ``GET /rest/api/content/{id}/child/comment``
+        from the OAuth gateway (410 Gone), so footer comments are read from
+        ``/pages/{id}/footer-comments`` and each thread's ``/children``.
+
+        Args:
+            page_id: The ID of the page to get footer comments from
+
+        Returns:
+            Root comments and replies in a flat, v1-compatible list
+
+        Raises:
+            ValueError: If the API request fails
+        """
+        try:
+            url = f"{self.base_url}/api/v2/pages/{page_id}/footer-comments"
+            params: dict[str, Any] = {"body-format": "storage"}
+
+            root_comments = self._get_all_comment_results(url, params=params)
+            comments: list[dict[str, Any]] = []
+            pending_parent_ids: list[str] = []
+            seen_comment_ids: set[str] = set()
+
+            for root_comment in root_comments:
+                comment = dict(root_comment)
+                comment_id = comment.get("id")
+                if comment_id is not None:
+                    comment_id = str(comment_id)
+                    if comment_id in seen_comment_ids:
+                        continue
+                    seen_comment_ids.add(comment_id)
+                    pending_parent_ids.append(comment_id)
+                comments.append(comment)
+
+            parent_index = 0
+            while parent_index < len(pending_parent_ids):
+                parent_id = pending_parent_ids[parent_index]
+                parent_index += 1
+                children_url = (
+                    f"{self.base_url}/api/v2/footer-comments/{parent_id}/children"
+                )
+                children = self._get_all_comment_results(
+                    children_url,
+                    params={"body-format": "storage"},
+                )
+
+                for raw_child in children:
+                    child = dict(raw_child)
+                    child.setdefault("parentCommentId", parent_id)
+                    child_id = child.get("id")
+                    if child_id is not None:
+                        child_id = str(child_id)
+                        if child_id in seen_comment_ids:
+                            continue
+                        seen_comment_ids.add(child_id)
+                        pending_parent_ids.append(child_id)
+                    comments.append(child)
+
+            return [self._convert_v2_comment_to_v1_format(c) for c in comments]
+
+        except HTTPError as e:
+            if e.response is not None:
+                logger.error(
+                    f"HTTP error getting footer comments for page '{page_id}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error getting footer comments for page '{page_id}': {e}")
+            msg = f"Failed to get footer comments for page '{page_id}': {e}"
+            raise ValueError(msg) from e
+        except (
+            requests.RequestException,
+            ValueError,
+            TypeError,
+            AttributeError,
+        ) as e:
+            logger.error(f"Error getting footer comments for page '{page_id}': {e}")
+            msg = f"Failed to get footer comments for page '{page_id}': {e}"
+            raise ValueError(msg) from e
+
     @staticmethod
     def _comment_next_cursor(
         response: requests.Response, data: dict[str, Any]
@@ -772,6 +977,15 @@ class ConfluenceV2Adapter:
         params: dict[str, Any],
     ) -> list[dict[str, Any]]:
         """Read every cursor page from a v2 comment collection endpoint."""
+        return self._get_all_cursor_results(url, params=params)
+
+    def _get_all_cursor_results(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Read every cursor page from a v2 collection endpoint."""
         results: list[dict[str, Any]] = []
         cursor: str | None = None
         seen_cursors: set[str | None] = set()
@@ -794,11 +1008,51 @@ class ConfluenceV2Adapter:
             if not cursor:
                 break
         else:
-            logger.warning(
-                "Stopping comment pagination after repeated cursor '%s'", cursor
-            )
+            logger.warning("Stopping pagination after repeated cursor '%s'", cursor)
 
         return results
+
+    def get_page_labels(self, page_id: str) -> dict[str, Any]:
+        """Get a page's labels using the v2 API.
+
+        Reads every cursor page of ``GET /pages/{id}/labels`` and returns the
+        labels in the v1 ``{"results": [...]}`` shape, with ``label`` mirrored
+        from ``name`` as the v1 endpoint does, so callers built for v1 keep
+        working.
+
+        Args:
+            page_id: The ID of the page whose labels to retrieve.
+
+        Returns:
+            A v1-compatible dict with a ``results`` list of label dicts.
+
+        Raises:
+            ValueError: If the request fails.
+        """
+        try:
+            url = f"{self.base_url}/api/v2/pages/{page_id}/labels"
+            raw_labels = self._get_all_cursor_results(url, params={"limit": 250})
+            results = [
+                {
+                    "id": str(label.get("id", "")),
+                    "prefix": label.get("prefix", "global"),
+                    "name": label.get("name", ""),
+                    "label": label.get("name", ""),
+                }
+                for label in raw_labels
+            ]
+            logger.debug(f"Retrieved {len(results)} labels for page '{page_id}'")
+            return {"results": results, "size": len(results)}
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error getting labels for page '{page_id}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error getting labels for page '{page_id}': {e}")
+            raise ValueError(f"Failed to get labels for page '{page_id}': {e}") from e
 
     def create_inline_comment(
         self,
@@ -1172,6 +1426,272 @@ class ConfluenceV2Adapter:
         except Exception:
             return None
 
+    @staticmethod
+    def _normalize_property(data: dict[str, Any]) -> dict[str, Any]:
+        """Flatten a v2 content property to id, key, value and version number."""
+        version = data.get("version") or {}
+        return {
+            "id": str(data.get("id", "")),
+            "key": str(data.get("key", "")),
+            "value": data.get("value"),
+            "version": version.get("number") if isinstance(version, dict) else None,
+        }
+
+    def get_page_properties(
+        self, page_id: str, key: str | None = None
+    ) -> list[dict[str, Any]]:
+        """List a page's content properties using the v2 API.
+
+        Args:
+            page_id: The ID of the page.
+            key: Optional property key to filter on.
+
+        Returns:
+            Properties as dicts with id, key, value and version number.
+
+        Raises:
+            ValueError: If the request fails.
+        """
+        try:
+            url = f"{self.base_url}/api/v2/pages/{page_id}/properties"
+            params: dict[str, Any] = {"limit": 250}
+            if key:
+                params["key"] = key
+            raw = self._get_all_comment_results(url, params=params)
+            return [self._normalize_property(item) for item in raw]
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error listing properties for page '{page_id}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error listing properties for page '{page_id}': {e}")
+            raise ValueError(
+                f"Failed to list properties for page '{page_id}': {e}"
+            ) from e
+
+    def set_page_property(self, page_id: str, key: str, value: Any) -> dict[str, Any]:
+        """Create or update a page content property using the v2 API.
+
+        v2 addresses a property by its id, so an existing key is looked up
+        first and updated at the next version; otherwise it is created.
+
+        Args:
+            page_id: The ID of the page.
+            key: The property key.
+            value: The JSON-serialisable value to store.
+
+        Returns:
+            The stored property as a dict with id, key, value and version.
+
+        Raises:
+            ValueError: If the request fails.
+        """
+        try:
+            existing = self.get_page_properties(page_id, key=key)
+            if existing:
+                current = existing[0]
+                url = (
+                    f"{self.base_url}/api/v2/pages/{page_id}/properties/{current['id']}"
+                )
+                data = {
+                    "key": key,
+                    "value": value,
+                    "version": {"number": int(current.get("version") or 0) + 1},
+                }
+                response = self.session.put(url, json=data)
+            else:
+                url = f"{self.base_url}/api/v2/pages/{page_id}/properties"
+                response = self.session.post(url, json={"key": key, "value": value})
+            response.raise_for_status()
+            return self._normalize_property(response.json())
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error setting property '{key}' on page '{page_id}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error setting property '{key}' on page '{page_id}': {e}")
+            raise ValueError(
+                f"Failed to set property '{key}' on page '{page_id}': {e}"
+            ) from e
+
+    def delete_page_property(self, page_id: str, key: str) -> bool:
+        """Delete a page content property by key using the v2 API.
+
+        Args:
+            page_id: The ID of the page.
+            key: The property key.
+
+        Returns:
+            True if a property was deleted, False if none had that key.
+
+        Raises:
+            ValueError: If the request fails.
+        """
+        try:
+            existing = self.get_page_properties(page_id, key=key)
+            if not existing:
+                return False
+            url = (
+                f"{self.base_url}/api/v2/pages/{page_id}/properties/{existing[0]['id']}"
+            )
+            response = self.session.delete(url)
+            response.raise_for_status()
+            return True
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error deleting property '{key}' on page '{page_id}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(
+                    f"Error deleting property '{key}' on page '{page_id}': {e}"
+                )
+            raise ValueError(
+                f"Failed to delete property '{key}' on page '{page_id}': {e}"
+            ) from e
+
+    def get_tasks(
+        self,
+        *,
+        page_id: str | None = None,
+        space_id: str | None = None,
+        status: str | None = None,
+        assigned_to: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List inline tasks using the v2 tasks API.
+
+        Args:
+            page_id: Only tasks on this page.
+            space_id: Only tasks in this space (numeric space id).
+            status: ``complete`` or ``incomplete``.
+            assigned_to: Only tasks assigned to this account id.
+            limit: Maximum number of tasks to return.
+
+        Returns:
+            Task objects as returned by the API, body in storage format.
+
+        Raises:
+            ValueError: If the request fails.
+        """
+        try:
+            url = f"{self.base_url}/api/v2/tasks"
+            params: dict[str, Any] = {
+                "body-format": "storage",
+                "limit": max(1, min(250, limit)),
+            }
+            if page_id:
+                params["page-id"] = page_id
+            if space_id:
+                params["space-id"] = space_id
+            if status:
+                params["status"] = status
+            if assigned_to:
+                params["assigned-to"] = assigned_to
+            tasks = self._get_all_comment_results(url, params=params)
+            return tasks[:limit]
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error listing tasks: {e}\nResponse: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error listing tasks: {e}")
+            raise ValueError(f"Failed to list tasks: {e}") from e
+
+    def get_task(self, task_id: str) -> dict[str, Any]:
+        """Get one inline task by id using the v2 tasks API.
+
+        Args:
+            task_id: The task id.
+
+        Returns:
+            The task object, body in storage format.
+
+        Raises:
+            ValueError: If the request fails.
+        """
+        try:
+            url = f"{self.base_url}/api/v2/tasks/{task_id}"
+            response = self.session.get(url, params={"body-format": "storage"})
+            response.raise_for_status()
+            task: dict[str, Any] = response.json()
+            return task
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error getting task '{task_id}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error getting task '{task_id}': {e}")
+            raise ValueError(f"Failed to get task '{task_id}': {e}") from e
+
+    def update_task(self, task_id: str, status: str) -> dict[str, Any]:
+        """Mark an inline task complete or incomplete using the v2 tasks API.
+
+        The endpoint takes the task's metadata fields with the new status;
+        the body is not part of the update, so the task is read first.
+
+        Args:
+            task_id: The task id.
+            status: ``complete`` or ``incomplete``.
+
+        Returns:
+            The updated task object as returned by the API.
+
+        Raises:
+            ValueError: If the request fails.
+        """
+        try:
+            current = self.get_task(task_id)
+            payload = {
+                key: current[key]
+                for key in (
+                    "id",
+                    "localId",
+                    "spaceId",
+                    "pageId",
+                    "blogPostId",
+                    "createdBy",
+                    "assignedTo",
+                    "completedBy",
+                    "createdAt",
+                    "updatedAt",
+                    "dueAt",
+                    "completedAt",
+                )
+                if current.get(key) is not None
+            }
+            payload["status"] = status
+            url = f"{self.base_url}/api/v2/tasks/{task_id}"
+            response = self.session.put(url, json=payload)
+            response.raise_for_status()
+            updated: dict[str, Any] = response.json()
+            if "body" not in updated and "body" in current:
+                updated["body"] = current["body"]
+            return updated
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error updating task '{task_id}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error updating task '{task_id}': {e}")
+            raise ValueError(f"Failed to update task '{task_id}': {e}") from e
+
     def get_page_versions_list(self, page_id: str) -> list[dict[str, Any]]:
         """Get list of all versions for a page using v2 API.
 
@@ -1215,11 +1735,12 @@ class ConfluenceV2Adapter:
         version: int,
         expand: str | None = None,
     ) -> dict[str, Any]:
-        """Get a specific version of a page using the versions API.
+        """Get a specific version of a page using the v2 API.
 
-        Note: The v2 API uses version IDs, not version numbers. We need to:
-        1. List all versions to find the version ID for the given version number
-        2. Fetch the specific version using its version ID
+        ``GET /pages/{id}?version={n}`` returns the page as it was at that
+        version, body included, in the ordinary page shape. The versions
+        listing cannot be used for this: its entries carry a ``number`` but
+        no id, and ``/versions/{n}`` returns version metadata without a body.
 
         Args:
             page_id: The ID of page
@@ -1233,29 +1754,16 @@ class ConfluenceV2Adapter:
             ValueError: If page retrieval fails or version not found
         """
         try:
-            # Step 1: Get all versions to find the version ID
-            versions_list = self.get_page_versions_list(page_id)
-
-            # Find the version with the matching version number
-            version_id = None
-            for ver in versions_list:
-                if ver.get("number") == version:
-                    version_id = ver.get("id")
-                    break
-
-            if not version_id:
-                raise ValueError(f"Version {version} not found for page '{page_id}'")
-
-            # Step 2: Fetch the specific version using its version ID
-            url = f"{self.base_url}/api/v2/versions/{version_id}"
-
-            # Convert v1 expand parameters to v2 format
-            params = {"body-format": "storage"}
+            url = f"{self.base_url}/api/v2/pages/{page_id}"
+            params: dict[str, Any] = {"body-format": "storage", "version": version}
 
             response = self.session.get(url, params=params)
             response.raise_for_status()
 
             v2_response = response.json()
+            returned = (v2_response.get("version") or {}).get("number")
+            if returned is not None and int(returned) != int(version):
+                raise ValueError(f"Version {version} not found for page '{page_id}'")
             logger.debug(f"Successfully retrieved page '{page_id}' version {version}")
 
             # Get space key from space ID if present
