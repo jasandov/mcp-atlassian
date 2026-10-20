@@ -107,7 +107,7 @@ JIRA_TOOLSETS: dict[str, ToolsetDefinition] = {
     ),
 }
 
-# --- Confluence toolsets (8) ---
+# --- Confluence toolsets (9) ---
 
 CONFLUENCE_TOOLSETS: dict[str, ToolsetDefinition] = {
     "confluence_pages": ToolsetDefinition(
@@ -148,6 +148,11 @@ CONFLUENCE_TOOLSETS: dict[str, ToolsetDefinition] = {
     "confluence_permissions": ToolsetDefinition(
         name="confluence_permissions",
         description="Content and space permission checking",
+        default=False,
+    ),
+    "confluence_tasks": ToolsetDefinition(
+        name="confluence_tasks",
+        description="Inline tasks on pages (Cloud only)",
         default=False,
     ),
 }

@@ -156,6 +156,10 @@ CATEGORY_TOOLS: dict[str, list[str]] = {
         "confluence_get_page_template",
         "confluence_create_page_from_template",
     ],
+    "confluence-tasks": [
+        "confluence_get_tasks",
+        "confluence_update_task",
+    ],
 }
 
 CATEGORY_META: dict[str, dict[str, str]] = {
@@ -217,6 +221,10 @@ CATEGORY_META: dict[str, dict[str, str]] = {
     "confluence-templates": {
         "title": "Confluence Templates",
         "description": "List page templates and create pages from them",
+    },
+    "confluence-tasks": {
+        "title": "Confluence Tasks",
+        "description": "List and complete inline tasks on pages",
     },
 }
 

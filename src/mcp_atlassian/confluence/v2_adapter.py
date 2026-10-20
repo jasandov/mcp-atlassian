@@ -1172,6 +1172,140 @@ class ConfluenceV2Adapter:
         except Exception:
             return None
 
+    def get_tasks(
+        self,
+        *,
+        page_id: str | None = None,
+        space_id: str | None = None,
+        status: str | None = None,
+        assigned_to: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List inline tasks using the v2 tasks API.
+
+        Args:
+            page_id: Only tasks on this page.
+            space_id: Only tasks in this space (numeric space id).
+            status: ``complete`` or ``incomplete``.
+            assigned_to: Only tasks assigned to this account id.
+            limit: Maximum number of tasks to return.
+
+        Returns:
+            Task objects as returned by the API, body in storage format.
+
+        Raises:
+            ValueError: If the request fails.
+        """
+        try:
+            url = f"{self.base_url}/api/v2/tasks"
+            params: dict[str, Any] = {
+                "body-format": "storage",
+                "limit": max(1, min(250, limit)),
+            }
+            if page_id:
+                params["page-id"] = page_id
+            if space_id:
+                params["space-id"] = space_id
+            if status:
+                params["status"] = status
+            if assigned_to:
+                params["assigned-to"] = assigned_to
+            tasks = self._get_all_comment_results(url, params=params)
+            return tasks[:limit]
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error listing tasks: {e}\nResponse: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error listing tasks: {e}")
+            raise ValueError(f"Failed to list tasks: {e}") from e
+
+    def get_task(self, task_id: str) -> dict[str, Any]:
+        """Get one inline task by id using the v2 tasks API.
+
+        Args:
+            task_id: The task id.
+
+        Returns:
+            The task object, body in storage format.
+
+        Raises:
+            ValueError: If the request fails.
+        """
+        try:
+            url = f"{self.base_url}/api/v2/tasks/{task_id}"
+            response = self.session.get(url, params={"body-format": "storage"})
+            response.raise_for_status()
+            task: dict[str, Any] = response.json()
+            return task
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error getting task '{task_id}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error getting task '{task_id}': {e}")
+            raise ValueError(f"Failed to get task '{task_id}': {e}") from e
+
+    def update_task(self, task_id: str, status: str) -> dict[str, Any]:
+        """Mark an inline task complete or incomplete using the v2 tasks API.
+
+        The endpoint takes the task's metadata fields with the new status;
+        the body is not part of the update, so the task is read first.
+
+        Args:
+            task_id: The task id.
+            status: ``complete`` or ``incomplete``.
+
+        Returns:
+            The updated task object as returned by the API.
+
+        Raises:
+            ValueError: If the request fails.
+        """
+        try:
+            current = self.get_task(task_id)
+            payload = {
+                key: current[key]
+                for key in (
+                    "id",
+                    "localId",
+                    "spaceId",
+                    "pageId",
+                    "blogPostId",
+                    "createdBy",
+                    "assignedTo",
+                    "completedBy",
+                    "createdAt",
+                    "updatedAt",
+                    "dueAt",
+                    "completedAt",
+                )
+                if current.get(key) is not None
+            }
+            payload["status"] = status
+            url = f"{self.base_url}/api/v2/tasks/{task_id}"
+            response = self.session.put(url, json=payload)
+            response.raise_for_status()
+            updated: dict[str, Any] = response.json()
+            if "body" not in updated and "body" in current:
+                updated["body"] = current["body"]
+            return updated
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error updating task '{task_id}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error updating task '{task_id}': {e}")
+            raise ValueError(f"Failed to update task '{task_id}': {e}") from e
+
     def get_page_versions_list(self, page_id: str) -> list[dict[str, Any]]:
         """Get list of all versions for a page using v2 API.
 

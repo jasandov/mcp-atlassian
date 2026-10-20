@@ -16,6 +16,7 @@ from starlette.requests import Request
 from src.mcp_atlassian.confluence import ConfluenceFetcher
 from src.mcp_atlassian.confluence.config import ConfluenceConfig
 from src.mcp_atlassian.models.confluence.page import ConfluencePage
+from src.mcp_atlassian.models.confluence.task import ConfluenceTask
 from src.mcp_atlassian.servers import confluence as confluence_server
 from src.mcp_atlassian.servers.context import MainAppContext
 from src.mcp_atlassian.servers.main import AtlassianMCP
@@ -178,6 +179,16 @@ def mock_confluence_fetcher():
         ],
         "_links": {},
     }
+    mock_task = MagicMock(spec=ConfluenceTask)
+    mock_task.to_simplified_dict.return_value = {
+        "id": "task-1",
+        "local_id": "7",
+        "status": "incomplete",
+        "body": "Write the handoff",
+        "page_id": "123456",
+    }
+    mock_fetcher.get_tasks.return_value = [mock_task]
+    mock_fetcher.update_task.return_value = mock_task
     mock_fetcher.list_page_templates.return_value = [
         {
             "templateId": "tpl-001",
@@ -250,11 +261,13 @@ def test_confluence_mcp(mock_confluence_fetcher, mock_base_confluence_config):
         get_page_template,
         get_space_page_tree,
         get_space_permissions,
+        get_tasks,
         list_page_templates,
         search,
         search_user,
         update_page,
         update_page_section,
+        update_task,
         upload_attachment,
         upload_attachments,
     )
@@ -303,6 +316,8 @@ def test_confluence_mcp(mock_confluence_fetcher, mock_base_confluence_config):
     confluence_sub_mcp.add_tool(get_page_template)
     confluence_sub_mcp.add_tool(create_page_from_template)
 
+    confluence_sub_mcp.add_tool(get_tasks)
+    confluence_sub_mcp.add_tool(update_task)
     test_mcp.mount(confluence_sub_mcp, namespace="confluence")
 
     return test_mcp
@@ -333,11 +348,13 @@ def no_fetcher_test_confluence_mcp(mock_base_confluence_config):
         get_page_template,
         get_space_page_tree,
         get_space_permissions,
+        get_tasks,
         list_page_templates,
         search,
         search_user,
         update_page,
         update_page_section,
+        update_task,
         upload_attachment,
         upload_attachments,
     )
@@ -388,6 +405,8 @@ def no_fetcher_test_confluence_mcp(mock_base_confluence_config):
     confluence_sub_mcp.add_tool(get_page_template)
     confluence_sub_mcp.add_tool(create_page_from_template)
 
+    confluence_sub_mcp.add_tool(get_tasks)
+    confluence_sub_mcp.add_tool(update_task)
     test_mcp.mount(confluence_sub_mcp, namespace="confluence")
 
     return test_mcp
@@ -1732,3 +1751,33 @@ async def test_get_page_images_fetch_failure(client, mock_confluence_fetcher):
     summary = json.loads(response.content[0].text)
     assert summary["downloaded"] == 0
     assert len(summary["failed"]) == 1
+
+
+@pytest.mark.anyio
+async def test_get_tasks(client, mock_confluence_fetcher):
+    """Test listing inline tasks on a page."""
+    response = await client.call_tool(
+        "confluence_get_tasks",
+        {"page_id": "123456", "status": "incomplete", "limit": 10},
+    )
+    mock_confluence_fetcher.get_tasks.assert_called_once_with(
+        page_id="123456",
+        space_id=None,
+        status="incomplete",
+        assigned_to=None,
+        limit=10,
+    )
+    result_data = json.loads(response.content[0].text)
+    assert result_data[0]["id"] == "task-1"
+    assert result_data[0]["body"] == "Write the handoff"
+
+
+@pytest.mark.anyio
+async def test_update_task(client, mock_confluence_fetcher):
+    """Test completing an inline task."""
+    response = await client.call_tool(
+        "confluence_update_task", {"task_id": "task-1", "status": "complete"}
+    )
+    mock_confluence_fetcher.update_task.assert_called_once_with("task-1", "complete")
+    result_data = json.loads(response.content[0].text)
+    assert result_data["id"] == "task-1"

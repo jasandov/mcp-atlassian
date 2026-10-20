@@ -715,3 +715,99 @@ class TestConfluenceV2AdapterComments:
         assert payload["pageId"] == "12345"
         assert "parentCommentId" not in payload
         assert result["id"] == "333444555"
+
+
+class TestConfluenceV2AdapterTasks:
+    """Tests for the v2 task operations."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Create a mock session."""
+        return MagicMock(spec=requests.Session)
+
+    @pytest.fixture
+    def v2_adapter(self, mock_session):
+        """Create a ConfluenceV2Adapter instance."""
+        return ConfluenceV2Adapter(
+            session=mock_session, base_url="https://example.atlassian.net/wiki"
+        )
+
+    @staticmethod
+    def _response(payload):
+        response = Mock()
+        response.status_code = 200
+        response.links = {}
+        response.json.return_value = payload
+        return response
+
+    def test_get_tasks_passes_filters(self, v2_adapter, mock_session):
+        """Filters map to the v2 query parameters."""
+        mock_session.get.return_value = self._response(
+            {"results": [{"id": "t1"}, {"id": "t2"}], "_links": {}}
+        )
+
+        result = v2_adapter.get_tasks(
+            page_id="1", status="incomplete", assigned_to="712020:abc", limit=1
+        )
+
+        mock_session.get.assert_called_once_with(
+            "https://example.atlassian.net/wiki/api/v2/tasks",
+            params={
+                "body-format": "storage",
+                "limit": 1,
+                "page-id": "1",
+                "status": "incomplete",
+                "assigned-to": "712020:abc",
+            },
+        )
+        assert [t["id"] for t in result] == ["t1"]
+
+    def test_update_task_sends_metadata_with_new_status(self, v2_adapter, mock_session):
+        """The task is read, then PUT without its body and with the new status."""
+        current = {
+            "id": "t1",
+            "localId": "7",
+            "spaceId": "120193605",
+            "pageId": "1",
+            "status": "incomplete",
+            "body": {"storage": {"value": "<p>Do it</p>"}},
+            "createdBy": "712020:abc",
+            "createdAt": "2026-10-20T20:00:00.000Z",
+            "assignedTo": None,
+        }
+        mock_session.get.return_value = self._response(current)
+        mock_session.put.return_value = self._response(
+            {**{k: v for k, v in current.items() if k != "body"}, "status": "complete"}
+        )
+
+        result = v2_adapter.update_task("t1", "complete")
+
+        mock_session.get.assert_called_once_with(
+            "https://example.atlassian.net/wiki/api/v2/tasks/t1",
+            params={"body-format": "storage"},
+        )
+        mock_session.put.assert_called_once_with(
+            "https://example.atlassian.net/wiki/api/v2/tasks/t1",
+            json={
+                "id": "t1",
+                "localId": "7",
+                "spaceId": "120193605",
+                "pageId": "1",
+                "createdBy": "712020:abc",
+                "createdAt": "2026-10-20T20:00:00.000Z",
+                "status": "complete",
+            },
+        )
+        assert result["status"] == "complete"
+        assert result["body"] == {"storage": {"value": "<p>Do it</p>"}}
+
+    def test_http_error_is_reported(self, v2_adapter, mock_session):
+        """An HTTP error becomes a ValueError."""
+        response = Mock()
+        response.status_code = 401
+        response.text = "scope does not match"
+        response.raise_for_status.side_effect = HTTPError(response=response)
+        mock_session.get.return_value = response
+
+        with pytest.raises(ValueError, match="Failed to list tasks"):
+            v2_adapter.get_tasks(page_id="1")

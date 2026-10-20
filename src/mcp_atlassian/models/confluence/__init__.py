@@ -10,6 +10,7 @@ Key models:
 - ConfluenceSearchResult: Container for Confluence search (CQL) results
 - ConfluenceComment: Page and inline comments
 - ConfluenceVersion: Content versioning information
+- ConfluenceTask: Inline tasks (checkbox items) on pages
 """
 
 from .analytics import PageViews, PageViewsBatchResponse
@@ -19,6 +20,7 @@ from .label import ConfluenceLabel
 from .page import ConfluencePage, ConfluenceVersion
 from .search import ConfluenceSearchResult
 from .space import ConfluenceSpace
+from .task import ConfluenceTask
 from .user_search import ConfluenceUserSearchResult, ConfluenceUserSearchResults
 
 __all__ = [
@@ -30,6 +32,7 @@ __all__ = [
     "ConfluenceLabel",
     "ConfluencePage",
     "ConfluenceSearchResult",
+    "ConfluenceTask",
     "ConfluenceUserSearchResult",
     "ConfluenceUserSearchResults",
     # Analytics models

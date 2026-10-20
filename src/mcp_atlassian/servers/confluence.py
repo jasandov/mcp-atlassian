@@ -3139,3 +3139,104 @@ async def get_space_permissions(
         cursor=cursor,
     )
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "read", "toolset:confluence_tasks"},
+    annotations={"title": "Get Tasks", "readOnlyHint": True},
+)
+async def get_tasks(
+    ctx: Context,
+    page_id: Annotated[
+        str | None,
+        Field(description="(Optional) Only tasks on this page ID.", default=None),
+    ] = None,
+    space_id: Annotated[
+        str | None,
+        Field(
+            description=(
+                "(Optional) Only tasks in this space, by numeric space id "
+                "(see confluence_get_space)."
+            ),
+            default=None,
+        ),
+    ] = None,
+    status: Annotated[
+        str | None,
+        Field(
+            description="(Optional) 'complete' or 'incomplete'.",
+            default=None,
+        ),
+    ] = None,
+    assigned_to: Annotated[
+        str | None,
+        Field(
+            description="(Optional) Only tasks assigned to this account ID.",
+            default=None,
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Field(description="Maximum number of tasks to return.", default=50, ge=1),
+    ] = 50,
+) -> str:
+    """List inline tasks, the checkbox items on Confluence pages.
+
+    This tool is only available for Confluence Cloud.
+
+    Args:
+        ctx: The FastMCP context.
+        page_id: Only tasks on this page.
+        space_id: Only tasks in this space.
+        status: 'complete' or 'incomplete'.
+        assigned_to: Only tasks assigned to this account ID.
+        limit: Maximum number of tasks.
+
+    Returns:
+        JSON string with a list of tasks: id, local_id, status, body (markdown),
+        page_id, assigned_to, due_at and the other dates when set.
+    """
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    tasks = confluence_fetcher.get_tasks(
+        page_id=page_id,
+        space_id=space_id,
+        status=status,
+        assigned_to=assigned_to,
+        limit=limit,
+    )
+    return json.dumps(
+        [task.to_simplified_dict() for task in tasks], indent=2, ensure_ascii=False
+    )
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "write", "toolset:confluence_tasks"},
+    annotations={"title": "Update Task", "destructiveHint": False},
+)
+@check_write_access
+async def update_task(
+    ctx: Context,
+    task_id: Annotated[
+        str,
+        Field(description="Task ID, as returned by confluence_get_tasks."),
+    ],
+    status: Annotated[
+        str,
+        Field(description="New status: 'complete' or 'incomplete'."),
+    ],
+) -> str:
+    """Mark an inline task complete or incomplete.
+
+    This tool is only available for Confluence Cloud.
+
+    Args:
+        ctx: The FastMCP context.
+        task_id: The task ID.
+        status: 'complete' or 'incomplete'.
+
+    Returns:
+        JSON string with the updated task.
+    """
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    task = confluence_fetcher.update_task(task_id, status)
+    return json.dumps(task.to_simplified_dict(), indent=2, ensure_ascii=False)
